@@ -33,6 +33,23 @@ class environment():
         self.ntriangles = 2 #can store as scalar, since will always be the same
         self.cost = torch.zeros([self.batchsize], device = device)
     
+    
+    def reset_copy(self, points, nsamples): #points is size [batchsize, npoints, 2]
+        self.batchsize = points.size(0) * nsamples
+        self.nsamples = nsamples
+        self.npoints = points.size(1) + 3
+        self.corner_points = torch.tensor([[0, 0], [2, 0], [0, 2]], dtype = torch.float, device = device)
+        self.points = torch.cat([self.corner_points.unsqueeze(0).expand(self.batchsize, -1, -1), points.unsqueeze(1).expand(-1, nsamples, -1, -1).reshape(-1, self.npoints - 3, 2)], dim = -2) #[batchsize * nsamples, npoints, 2]
+        self.points_mask = torch.cat([torch.ones([self.batchsize, 3], dtype = torch.bool, device = device), torch.zeros([self.batchsize, self.npoints - 3], dtype = torch.bool, device = device)], dim = 1)
+        self.points_sequence = torch.empty([self.batchsize, 0], dtype = torch.long, device = device)
+        
+        self.partial_delaunay_triangles = torch.tensor([[0, 2, 1], [0, 1, 2]], dtype = torch.int64, device = device).unsqueeze(0).expand(self.batchsize, -1, -1).contiguous() #[batchsize, ntriangles, 3] contains index of points, always anticlockwise
+        self.partial_delaunay_edges = torch.tensor([5, 4, 3, 2, 1, 0], dtype = torch.int64, device = device).unsqueeze(0).expand(self.batchsize, -1).contiguous()
+        
+        self.ntriangles = 2
+        self.cost = torch.zeros([self.batchsize], device = device)
+        
+    
     def update(self, point_index): #point_index is [batchsize]
         if point_index.size(0) != self.batchsize:
             print("Error: point_index.size() doesn't match expected size, should be [batchsize]")
@@ -132,8 +149,17 @@ class environment():
 
 
 env = environment()
-npoints = 5
-batchsize = 1000
+npoints = 10
+minibatchsize = 1
+nbatches = 10
+
+for k in range(epochs = 30):
+    points = torch.rand([1, npoints, 2], device = device)
+    env.reset_copy(points)
+    allroutes = env.allindices()
+    for j in range(nbatches):
+        env.reset_copy(points)
+        
 env.reset(npoints + 3, batchsize, math.factorial(npoints))
 allroutes = env.allindices() + 3
 allroutes = allroutes.unsqueeze(0).expand(batchsize, -1, -1).reshape(-1, npoints)
