@@ -159,8 +159,6 @@ class environment:
         conflicting_edges = torch.cat([conflicting_edges_index0.view(-1).unsqueeze(-1), conflicting_edges_index1.view(-1).unsqueeze(-1), conflicting_edges_index2.view(-1).unsqueeze(-1)], dim = -1).reshape(-1, 3) # [conflicts * 4, 3]
         assert list(conflicting_edges.size()) == [conflicts * 4, 3]
         
-        conflicting_edges_copy = conflicting_edges.clone() # [conflicts * 4, 3], for later use to construct the new triangles
-        
         edge_batch_index = self.batch_index[incircle_test].unsqueeze(1).expand(-1, 4).reshape(-1) # [conflicts * 4]
         assert list(edge_batch_index.size()) == [conflicts * 4]
         assert str(edge_batch_index.device) == device
@@ -169,42 +167,27 @@ class environment:
         comparison_edges = conflicting_edges[:, indices] # [conflicts * 4, 3]
         assert list(comparison_edges.size()) == [conflicts * 4, 3]
         
+        
         unravel_nomatch_mask = torch.ones([conflicts * 4], dtype = torch.bool, device = device) # [conflicts * 4]
-        
-        edge_batch_index_extended = torch.cat([edge_batch_index, torch.tensor([-1], dtype = torch.long, device = device)])
-        
-        starting_index = torch.arange(conflicts * 4, dtype = torch.long, device = device) # [conflicts * 4]
-        current_comparison_index = starting_index.clone() # [conflicts * 4]
-        batch_index_todo = edge_batch_index.clone()
-        todo_mask = torch.ones([conflicts * 4], dtype = torch.bool, device = device) # [conflicts * 4]
-        while todo_mask.sum():
+        i = 1
+        while True:
             
-            if todo_mask.sum() < todo_mask.size(0) // 3:
-                conflicting_edges = conflicting_edges[todo_mask]
-                current_comparison_index = current_comparison_index[todo_mask]
-                starting_index = starting_index[todo_mask]
-                batch_index_todo = batch_index_todo[todo_mask]
-                todo_mask = torch.ones([todo_mask.sum()], dtype = torch.bool, device = device)
+            todo_mask = unravel_nomatch_mask[:-i].logical_and(edge_batch_index[:-i] == edge_batch_index[i:])
+            if i % 4 == 0:
+                if todo_mask.sum() == 0:
+                    break
             
-            assert conflicting_edges.size(0) == todo_mask.size(0)
-            assert current_comparison_index.size() == todo_mask.size()
-            assert batch_index_todo.size() == todo_mask.size()
+            match_mask = todo_mask.clone()
+            match_mask[todo_mask] = (conflicting_edges[:-i][todo_mask] != comparison_edges[i:][todo_mask]).sum(-1).logical_not()
             
-            nomatch_mask = (conflicting_edges != comparison_edges[current_comparison_index]).sum(-1).bool()#.logical_or(batch_index_todo != edge_batch_index_extended[current_comparison_index])
+            unravel_nomatch_mask[:-i][match_mask] = False
+            unravel_nomatch_mask[i:][match_mask] = False
             
-            match_mask = nomatch_mask.logical_not().logical_and(todo_mask)
-            #assert unravel_nomatch_mask[match_index0].logical_not().sum().logical_not()
-            #assert unravel_nomatch_mask[match_index1].logical_not().sum().logical_not()
-            unravel_nomatch_mask[starting_index[match_mask]] = False
-            unravel_nomatch_mask[current_comparison_index[match_mask]] = False
-            
-            todo_mask = todo_mask.logical_and(nomatch_mask).logical_and(batch_index_todo == edge_batch_index_extended[current_comparison_index + 1])
-            
-            current_comparison_index = (current_comparison_index + 1) * todo_mask
+            i += 1
         
         batch_newtriangles = unravel_nomatch_mask.sum()
         
-        nomatch_edges = conflicting_edges_copy[unravel_nomatch_mask] # [batch_newtriangles, 3], already in correct order to insert into 1,2,3 (since already anticlockwise from outside in)
+        nomatch_edges = conflicting_edges[unravel_nomatch_mask] # [batch_newtriangles, 3], already in correct order to insert into 1,2,3 (since already anticlockwise from outside in)
         assert list(nomatch_edges.size()) == [batch_newtriangles, 3]
         nomatch_batch_index = edge_batch_index[unravel_nomatch_mask] # [batch_newtriangles]
         
@@ -278,7 +261,7 @@ class environment:
             [self.points_sequence, point_index.unsqueeze(1)], dim=1
         )
         
-        self.cost += nnew_triangles
+        self.cost += nremoved_triangles
 
 
 # turn integer x,y coords (in nxn grid) into position d (0 to n^2-1) along the Hilbert curve.
@@ -346,3 +329,5 @@ def random_insertion(npoints=104, batchsize=200):
 def kdtree_insertion(npoints=103, batchsize=200):
     env.reset(npoints, batchsize)
     points = env.points[:, 3:]  # [batchsize, npoints - 3]
+    
+env = environment()
