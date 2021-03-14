@@ -1,21 +1,3 @@
-"""
-REDO THIS WITHOUT KEEPING TRACK OF EDGES
-
-Idea: among removed triangles, pair up faces that both apear, left with faces that don't - the boundary, from which we construct new triangles
-
-have two lists, faces left to check, and faces to check against (these will be all 3 anticlockwise versions of each face)
-keep track of the batch you came from, and the index against which you are currently checking
-increase index by one each time until either: find a match, or: no longer checking against same batch
-at which point we remove FROM THE FIRST LIST
-repeat until all removed
-when find a match, mark it in second list
-removed all marked faces
-somehow find number remaining in each batch, and make sure to copy that many 'new points' into a long list
-construct new triangles from the above information
-"""
-
-
-
 import math
 import random
 import numpy as np
@@ -90,7 +72,7 @@ class environment:
     def given(self, internal_points, corner_points, initial_triangulation, initial_triangulation_edges, nsamples = 1):
         """
         internal_points, external_points are [batchsize, npoints, 2]
-        initial_triangulation is [batchsize, ntriangles, 4]
+        initial_triangulation is [batchsize, ntriangles, 3]
         """
         assert nsamples == 1
         assert internal_points.size(0) == corner_points.size(0)
@@ -115,7 +97,7 @@ class environment:
         corner_points, etc., shoudn't include a batch dimension
         """
         if corner_points == None:
-            ncornerpoints = 4
+            ncornerpoints = 3
         else:
             ncornerpoints = corner_points.size(0)
         if npoints <= ncornerpoints:
@@ -127,14 +109,14 @@ class environment:
         self.nsamples = nsamples
         self.npoints = npoints
         self.points = (
-            torch.rand([batchsize, npoints - ncornerpoints, 3], dtype = floattype, device=device)
+            torch.rand([batchsize, npoints - ncornerpoints, 2], dtype = floattype, device=device)
             .unsqueeze(1)
             .expand(-1, nsamples, -1, -1)
             .reshape(self.batchsize, npoints - ncornerpoints, 2)
         )
         if corner_points == None:
             self.corner_points = torch.tensor(
-                [[0, 0, 0], [3, 0, 0], [0, 3, 0], [0, 0, 3]], dtype = floattype, device=device
+                [[0, 0], [2, 0], [0, 2]], dtype = floattype, device=device
             )
         else:
             self.corner_points = corner_points
@@ -159,21 +141,15 @@ class environment:
         )
 
         """use a trick, for the purpose of an 'external' triangle that is always left untouched, which means we don't have to deal with boundary edges as being different. external triangle is [0, 1, 2] traversed clockwise..."""
-        """
-        points are now triples
-        triangles are now quadruples
-        edges are now still just indices, but there are four of them per 'triangle', and they correspond to triples of points, not pairs
-        we use  0,1,2  1,0,3  2,3,0  3,2,1  as the order of the four 'edges'/faces (read in this order, should be anticlockwise from outside facing in)
-        """
         if corner_points == None:
             self.partial_delaunay_triangles = (
-                torch.tensor([[3, 1, 2, 0], [0, 1, 2, 3]], dtype=torch.int64, device=device)
+                torch.tensor([[0, 2, 1], [0, 1, 2]], dtype=torch.int64, device=device)
                 .unsqueeze(0)
                 .expand(self.batchsize, -1, -1)
                 .contiguous()
             )  # [batchsize, ntriangles, 3] contains index of points, always anticlockwise
             self.partial_delaunay_edges = (
-                torch.tensor([7, 5, 6, 4, 3, 1, 2, 0], dtype=torch.int64, device=device)
+                torch.tensor([5, 4, 3, 2, 1, 0], dtype=torch.int64, device=device)
                 .unsqueeze(0)
                 .expand(self.batchsize, -1)
                 .contiguous()
@@ -197,57 +173,57 @@ class environment:
             return
         triangles_coordinates = self.points.gather(
             1,
-            self.partial_delaunay_triangles.view(self.batchsize, self.ntriangles * 4)
+            self.partial_delaunay_triangles.view(self.batchsize, self.ntriangles * 3)
             .unsqueeze(2)
-            .expand(-1, -1, 3),
+            .expand(-1, -1, 2),
         ).view(
-            self.batchsize, self.ntriangles, 4, 3
-        )  # [batchsize, ntriangles, 4, 3]
+            self.batchsize, self.ntriangles, 3, 2
+        )  # [batchsize, ntriangles, 3, 2]
         newpoint = self.points.gather(
-            1, point_index.unsqueeze(1).unsqueeze(2).expand(self.batchsize, 1, 3)
+            1, point_index.unsqueeze(1).unsqueeze(2).expand(self.batchsize, 1, 2)
         ).squeeze(
             1
-        )  # [batchsize, 3]
+        )  # [batchsize, 2]
 
         incircle_matrix = torch.cat(
             [
-                newpoint.unsqueeze(1).unsqueeze(2).expand(-1, self.ntriangles, 1, -1),
                 triangles_coordinates,
+                newpoint.unsqueeze(1).unsqueeze(2).expand(-1, self.ntriangles, 1, -1),
             ],
             dim=-2,
-        )  # [batchsize, ntriangles, 5, 3]
+        )  # [batchsize, ntriangles, 4, 2]
         incircle_matrix = torch.cat(
             [
-                (incircle_matrix * incircle_matrix).sum(-1, keepdim=True),
                 incircle_matrix,
-                torch.ones([self.batchsize, self.ntriangles, 5, 1], dtype = floattype, device=device),
+                (incircle_matrix * incircle_matrix).sum(-1, keepdim=True),
+                torch.ones([self.batchsize, self.ntriangles, 4, 1], dtype = floattype, device=device),
             ],
             dim=-1,
-        )  # [batchsize, ntriangles, 5, 5]
+        )  # [batchsize, ntriangles, 4, 4]
         assert incircle_matrix.dtype == floattype
         incircle_test = (
             incircle_matrix.det() > 0
         )  # [batchsize, ntriangles], is True if inside incircle
         removed_edge_mask = (
-            incircle_test.unsqueeze(2).expand(-1, -1, 4).reshape(-1)
-        )  # [batchsize * ntriangles * 4]
+            incircle_test.unsqueeze(2).expand(-1, -1, 3).reshape(-1)
+        )  # [batchsize * ntriangles * 3]
 
         edges = (
             self.partial_delaunay_edges
             + self.ntriangles
-            * 4
+            * 3
             * torch.arange(self.batchsize, device=device).unsqueeze(1)
         ).view(
             -1
-        )  # [batchsize * ntriangles * 4]
+        )  # [batchsize * ntriangles * 3]
         neighbouring_edge = edges.masked_select(removed_edge_mask)
         neighbouring_edge_mask = torch.zeros(
-            [self.batchsize * self.ntriangles * 4], device=device, dtype=torch.bool
+            [self.batchsize * self.ntriangles * 3], device=device, dtype=torch.bool
         )
         neighbouring_edge_mask[neighbouring_edge] = True
         neighbouring_edge_mask = (
             neighbouring_edge_mask * removed_edge_mask.logical_not()
-        )  # [batchsize * ntriangles * 4]
+        )  # [batchsize * ntriangles * 3]
 
         n_new_triangles = neighbouring_edge_mask.view(self.batchsize, -1).sum(
             -1
@@ -255,26 +231,18 @@ class environment:
 
         new_point = (
             point_index.unsqueeze(1)
-            .expand(-1, self.ntriangles * 4)
+            .expand(-1, self.ntriangles * 3)
             .masked_select(neighbouring_edge_mask.view(self.batchsize, -1))
-        ) # get the correct number of copies of new_point for each batch
+        )
 
-        
-        """
-        for 3D version I'm going to store the points in the neighbouring face by their location in the actual neighbouring face
-        e.g. zeroth means zeroth in the neighbouring face, not in the new one we are adding
-        """
-        zeroth_point_mask = neighbouring_edge_mask.view(
-            self.batchsize, -1, 4
-        )  # [batchsize, ntriangles, 4], is location in self.partial_delaunay_triangles of the zeroth point of the neighbouring face
-        """
-        THIS IS WHERE I GOT UP TO (CHANGING OVER TO 3D)
-        """
+        second_point_mask = neighbouring_edge_mask.view(
+            self.batchsize, -1, 3
+        )  # [batchsize, ntriangles 3]
         (
             first_point_indices0,
             first_point_indices1,
             first_point_indices2,
-        ) = zeroth_point_mask.nonzero(as_tuple=True)
+        ) = second_point_mask.nonzero(as_tuple=True)
         first_point_indices2 = (first_point_indices2 != 2) * (first_point_indices2 + 1)
 
         first_point = self.partial_delaunay_triangles[
